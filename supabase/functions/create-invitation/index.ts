@@ -9,8 +9,9 @@ interface InvitationRequest {
   email: string
   firstName: string
   lastName: string
-  companyId: number
-  adminId: number
+  companyId: string
+  adminId: string
+  role?: 'USER' | 'ADMIN' | 'SUPER_ADMIN'
 }
 
 const corsHeaders = {
@@ -29,6 +30,9 @@ serve(async (req: Request) => {
   }
 
   try {
+    // Debug: Log des headers reçus
+    console.log('Headers reçus:', Object.fromEntries(req.headers.entries()))
+    
     // Vérifier la méthode HTTP
     if (req.method !== 'POST') {
       return new Response(
@@ -43,24 +47,66 @@ serve(async (req: Request) => {
       )
     }
 
+    // Récupérer et débugger les données de la requête
     const requestData: InvitationRequest = await req.json()
-    const { email, firstName, lastName, companyId, adminId } = requestData
+    console.log('Données reçues:', requestData)
+    
+    const { email, firstName, lastName, companyId, adminId, role = 'USER' } = requestData
 
-    console.log('Tentative de création d\'invitation pour:', email)
+    // Validation des données requises
+    if (!email || !firstName || !lastName || !companyId || !adminId) {
+      return new Response(
+        JSON.stringify({ 
+          error: 'Tous les champs sont requis: email, firstName, lastName, companyId, adminId' 
+        }),
+        { 
+          status: 400, 
+          headers: { 
+            'Content-Type': 'application/json',
+            ...corsHeaders
+          } 
+        }
+      )
+    }
+
+    console.log('Tentative de création d\'invitation pour:', email, 'par admin:', adminId)
 
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
 
     // Vérifier si l'admin existe et a les permissions
+    console.log('Recherche admin avec UUID:', adminId)
     const { data: admin, error: adminError } = await supabaseAdmin
-      .from('users')
+      .from('profiles')
       .select('role, company_id')
       .eq('user_id', adminId)
       .single()
 
-    if (adminError || !admin) {
-      console.log('Admin non trouvé:', adminError)
+    if (adminError) {
+      console.error('Erreur lors de la recherche admin:', adminError)
       return new Response(
-        JSON.stringify({ error: 'Admin non trouvé' }),
+        JSON.stringify({ 
+          error: 'Erreur recherche admin', 
+          details: adminError.message,
+          adminId 
+        }),
+        { 
+          status: 500, 
+          headers: { 
+            'Content-Type': 'application/json',
+            ...corsHeaders
+          } 
+        }
+      )
+    }
+
+    if (!admin) {
+      console.log('Admin non trouvé pour UUID:', adminId)
+      return new Response(
+        JSON.stringify({ 
+          error: 'Admin non trouvé',
+          adminId,
+          details: 'Aucun profil trouvé avec cet UUID'
+        }),
         { 
           status: 404, 
           headers: { 
@@ -71,9 +117,16 @@ serve(async (req: Request) => {
       )
     }
 
-    if (admin.role !== 'Admin' && admin.role !== 'Superadmin') {
+    console.log('Admin trouvé:', { role: admin.role, company_id: admin.company_id })
+
+    // Vérifier les permissions
+    if (admin.role !== 'ADMIN' && admin.role !== 'SUPER_ADMIN') {
       return new Response(
-        JSON.stringify({ error: 'Permissions insuffisantes' }),
+        JSON.stringify({ 
+          error: 'Permissions insuffisantes',
+          currentRole: admin.role,
+          requiredRoles: ['ADMIN', 'SUPER_ADMIN']
+        }),
         { 
           status: 403, 
           headers: { 
@@ -84,9 +137,14 @@ serve(async (req: Request) => {
       )
     }
 
+    // Vérifier que l'admin appartient à la même entreprise
     if (admin.company_id !== companyId) {
       return new Response(
-        JSON.stringify({ error: 'L\'admin ne peut inviter que dans sa propre entreprise' }),
+        JSON.stringify({ 
+          error: 'L\'admin ne peut inviter que dans sa propre entreprise',
+          adminCompanyId: admin.company_id,
+          requestedCompanyId: companyId
+        }),
         { 
           status: 403, 
           headers: { 
@@ -97,18 +155,18 @@ serve(async (req: Request) => {
       )
     }
 
-    // Vérifier si l'email existe déjà dans les users personnalisés
-    const { data: existingUser, error: userCheckError } = await supabaseAdmin
-      .from('users')
-      .select('user_id, auth_id')
-      .eq('email', email)
-      .single()
-
-    console.log('Vérification users personnalisés:', { existingUser, userCheckError })
+    // Vérifier si l'utilisateur n'existe pas déjà
+    console.log('Vérification existence utilisateur pour:', email)
+    
+    const { data: authUsers, error: listError } = await supabaseAdmin.auth.admin.listUsers()
+    const existingUser = authUsers?.users?.find(u => u.email === email)
 
     if (existingUser) {
+      console.log('Utilisateur déjà existant:', email)
       return new Response(
-        JSON.stringify({ error: 'Un utilisateur avec cet email existe déjà dans la table users' }),
+        JSON.stringify({ 
+          error: 'Un utilisateur avec cet email existe déjà' 
+        }),
         { 
           status: 409, 
           headers: { 
@@ -119,132 +177,39 @@ serve(async (req: Request) => {
       )
     }
 
-    // Vérifier si l'email existe déjà dans auth.users
-    console.log('Vérification auth.users pour:', email)
-    
     try {
-      const { data: userByEmail, error: emailError } = await supabaseAdmin.auth.admin.getUserByEmail(email)
-      console.log('Résultat getUserByEmail:', { 
-        user: userByEmail?.user ? {
-          id: userByEmail.user.id,
-          email: userByEmail.user.email
-        } : null, 
-        error: emailError 
-      })
+      // Générer un token unique pour l'invitation
+      const inviteToken = crypto.randomUUID()
       
-      if (userByEmail && userByEmail.user) {
-        console.log('Utilisateur trouvé dans auth avec getUserByEmail:', userByEmail.user.email)
-        return new Response(
-          JSON.stringify({ 
-            error: 'Un utilisateur avec cet email existe déjà dans l\'authentification',
-            details: `Email trouvé: ${userByEmail.user.email}`
-          }),
-          { 
-            status: 409, 
-            headers: { 
-              'Content-Type': 'application/json',
-              ...corsHeaders
-            } 
-          }
-        )
-      }
-    } catch (emailCheckError) {
-      console.log('getUserByEmail error (normal si l\'utilisateur n\'existe pas):', emailCheckError)
-    }
-
-    // Vérifier si une invitation existe déjà pour cet email
-    const { data: existingInvite, error: inviteCheckError } = await supabaseAdmin
-      .from('invites')
-      .select('invite_id')
-      .eq('email', email)
-      .eq('used', false)
-      .single()
-
-    console.log('Vérification invitations:', { existingInvite, inviteCheckError })
-
-    if (existingInvite) {
-      return new Response(
-        JSON.stringify({ error: 'Une invitation existe déjà pour cet email' }),
-        { 
-          status: 409, 
-          headers: { 
-            'Content-Type': 'application/json',
-            ...corsHeaders
-          } 
-        }
-      )
-    }
-
-    // Générer un token unique
-    const token = crypto.randomUUID()
-    console.log('Token généré pour:', email)
-    
-    try {
-      // 1. D'abord, créer l'utilisateur dans auth.users avec le token comme mot de passe
-      console.log('Création utilisateur auth pour:', email)
-      const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
-        email,
-        password: token,
-        email_confirm: true, // Confirmer l'email automatiquement
-        user_metadata: {
-          first_name: firstName,
-          last_name: lastName,
-          company_id: companyId,
-          first_connection: true
-        }
-      })
-
-      console.log('Résultat création auth:', { 
-        user: authUser?.user ? {
-          id: authUser.user.id,
-          email: authUser.user.email
-        } : null, 
-        error: authError 
-      })
-
-      if (authError || !authUser.user) {
-        console.error('Erreur création auth:', authError)
-        return new Response(
-          JSON.stringify({ 
-            error: 'Erreur lors de la création de l\'utilisateur d\'authentification', 
-            details: authError?.message || 'Pas d\'utilisateur retourné'
-          }),
-          { 
-            status: 500, 
-            headers: { 
-              'Content-Type': 'application/json',
-              ...corsHeaders
-            } 
-          }
-        )
-      }
-
-      const authUserId = authUser.user.id
-
-      // 2. Ensuite, créer l'invitation
-      console.log('Création invitation pour:', email)
-      const { data: invite, error: inviteError } = await supabaseAdmin
+      // Calculer la date d'expiration (ex: 7 jours)
+      const expiresAt = new Date()
+      expiresAt.setDate(expiresAt.getDate() + 7)
+      
+      console.log('Création de l\'invitation dans la table invites pour:', email)
+      
+      // Créer l'invitation dans la table invites
+      const { data: invitation, error: inviteError } = await supabaseAdmin
         .from('invites')
         .insert({
           email,
           first_name: firstName,
           last_name: lastName,
           company_id: companyId,
-          token,
-          expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() // Expire dans 7 jours
+          token: inviteToken,
+          expires_at: expiresAt.toISOString(),
+          used: false,
+          invited_at: new Date().toISOString()
         })
         .select()
         .single()
-
-      console.log('Résultat création invitation:', { invite: invite?.invite_id, error: inviteError })
 
       if (inviteError) {
         console.error('Erreur création invitation:', inviteError)
-        // Si erreur, supprimer l'utilisateur auth créé
-        await supabaseAdmin.auth.admin.deleteUser(authUserId)
-        
         return new Response(
-          JSON.stringify({ error: 'Erreur lors de la création de l\'invitation' }),
+          JSON.stringify({ 
+            error: 'Erreur lors de la création de l\'invitation', 
+            details: inviteError.message 
+          }),
           { 
             status: 500, 
             headers: { 
@@ -255,37 +220,36 @@ serve(async (req: Request) => {
         )
       }
 
-      // 3. Enfin, créer l'utilisateur dans la table personnalisée avec l'auth_id
-      console.log('Création utilisateur table personnalisée pour:', email, 'avec auth_id:', authUserId)
-      const { data: user, error: userError } = await supabaseAdmin
-        .from('users')
-        .insert({
-          auth_id: authUserId, // Lier l'auth_id à l'user
-          email,
+      console.log('Invitation créée avec succès, création de l\'utilisateur dans auth.users')
+      
+      // Créer l'utilisateur dans auth.users avec le token comme mot de passe
+      const { data: authUser, error: authError } = await supabaseAdmin.auth.admin.createUser({
+        email,
+        password: inviteToken,  // Le token sert de mot de passe temporaire
+        email_confirm: true,
+        user_metadata: {
           first_name: firstName,
           last_name: lastName,
           company_id: companyId,
-          password: null, // On ne stocke pas le mot de passe dans notre table car il est géré par auth
-          first_connection: true,
-          active: true,
-          role: 'User'
-        })
-        .select()
-        .single()
+          role: role,
+          first_connection: true
+        }
+      })
 
-      console.log('Résultat création user:', { user: user?.user_id, error: userError })
-
-      if (userError) {
-        console.error('Erreur création user:', userError)
-        // Si erreur, supprimer l'utilisateur auth et l'invitation
-        await supabaseAdmin.auth.admin.deleteUser(authUserId)
+      if (authError) {
+        console.error('Erreur création auth user:', authError)
+        
+        // Si l'erreur survient, supprimer l'invitation créée
         await supabaseAdmin
           .from('invites')
           .delete()
-          .eq('invite_id', invite.invite_id)
+          .eq('invite_id', invitation.invite_id)
 
         return new Response(
-          JSON.stringify({ error: 'Erreur lors de la création du compte utilisateur' }),
+          JSON.stringify({ 
+            error: 'Erreur lors de la création du compte utilisateur', 
+            details: authError.message 
+          }),
           { 
             status: 500, 
             headers: { 
@@ -296,19 +260,23 @@ serve(async (req: Request) => {
         )
       }
 
-      console.log('Invitation créée avec succès pour:', email, 'auth_id:', authUserId, 'user_id:', user.user_id)
+      console.log('Utilisateur créé avec succès:', authUser.user.id)
+      
+      // TODO: Ici vous pouvez ajouter l'envoi d'email
+      // Ex: envoyer un email avec les informations de connexion
+      
       return new Response(
         JSON.stringify({ 
-          success: true, 
-          invite,
-          user: {
-            user_id: user.user_id,
-            auth_id: user.auth_id,
-            email: user.email,
-            first_name: user.first_name,
-            last_name: user.last_name
-          },
-          auth_user_id: authUserId
+          success: true,
+          message: 'Invitation et compte utilisateur créés avec succès',
+          inviteId: invitation.invite_id,
+          userId: authUser.user.id,
+          expiresAt: expiresAt.toISOString(),
+          // En production, ne pas retourner les infos de connexion
+          loginInfo: {
+            email: email,
+            temporaryPassword: inviteToken
+          }
         }),
         { 
           status: 201, 
@@ -320,11 +288,12 @@ serve(async (req: Request) => {
       )
 
     } catch (error) {
-      // En cas d'erreur générale, tout nettoyer
       console.error('Erreur lors de la création de l\'invitation:', error)
-      
       return new Response(
-        JSON.stringify({ error: 'Erreur lors de la création de l\'invitation', details: error.message }),
+        JSON.stringify({ 
+          error: 'Erreur lors de la création de l\'invitation', 
+          details: error.message 
+        }),
         { 
           status: 500, 
           headers: { 
@@ -338,7 +307,11 @@ serve(async (req: Request) => {
   } catch (error) {
     console.error('Erreur serveur:', error)
     return new Response(
-      JSON.stringify({ error: 'Erreur serveur', details: error.message }),
+      JSON.stringify({ 
+        error: 'Erreur serveur', 
+        details: error.message,
+        stack: error.stack
+      }),
       { 
         status: 500, 
         headers: { 

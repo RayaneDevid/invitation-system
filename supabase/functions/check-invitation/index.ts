@@ -86,7 +86,7 @@ serve(async (req: Request) => {
 
     // Vérifier si l'utilisateur existe
     const { data: user, error: userError } = await supabaseAdmin
-      .from('users')
+      .from('profiles')
       .select('first_connection')
       .eq('email', email)
       .single()

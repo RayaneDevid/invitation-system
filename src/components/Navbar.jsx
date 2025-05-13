@@ -51,7 +51,7 @@ const Navbar = () => {
         <h2>Invitation System</h2>
         <div className="nav-links">
           <Link to="/dashboard">Dashboard</Link>
-          {(user.role === 'Admin' || user.role === 'Superadmin') && (
+          {(user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') && (
             <>
               <Link to="/invitations">Invitations</Link>
               <Link to="/create-invitation">Créer Invitation</Link>

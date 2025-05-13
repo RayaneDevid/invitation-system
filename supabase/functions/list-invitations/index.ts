@@ -6,7 +6,7 @@ const supabaseUrl = Deno.env.get('SUPABASE_URL')!
 const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
 interface ListInvitationsRequest {
-  adminId: number
+  adminId: string  // UUID maintenant
   companyId: number
 }
 
@@ -46,7 +46,7 @@ serve(async (req: Request) => {
 
     // Vérifier si l'admin existe et a les permissions
     const { data: admin, error: adminError } = await supabaseAdmin
-      .from('users')
+      .from('profiles')  // Changé de 'users' à 'profiles'
       .select('role, company_id')
       .eq('user_id', adminId)
       .single()
@@ -64,7 +64,7 @@ serve(async (req: Request) => {
       )
     }
 
-    if (admin.role !== 'Admin' && admin.role !== 'Superadmin') {
+    if (admin.role !== 'ADMIN' && admin.role !== 'SUPER_ADMIN') {
       return new Response(
         JSON.stringify({ error: 'Permissions insuffisantes' }),
         { 

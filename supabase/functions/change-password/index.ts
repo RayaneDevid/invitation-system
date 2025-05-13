@@ -46,9 +46,9 @@ serve(async (req: Request) => {
 
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
 
-    // Récupérer l'utilisateur de notre table personnalisée
+    // Récupérer l'utilisateur de la table profiles
     const { data: user, error: userError } = await supabaseAdmin
-      .from('users')
+      .from('profiles')  // Changé de 'users' à 'profiles'
       .select('*')
       .eq('email', email)
       .single()
@@ -81,11 +81,25 @@ serve(async (req: Request) => {
     }
 
     // Récupérer l'utilisateur auth par email
-    const { data: authUsers } = await supabaseAdmin.auth.admin.listUsers({
-      filter: `email.eq."${email}"`
-    })
-
+    const { data: authUsers } = await supabaseAdmin.auth.admin.listUsers()
+    
     if (!authUsers?.users || authUsers.users.length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'Aucun utilisateur d\'authentification trouvé' }),
+        { 
+          status: 404, 
+          headers: { 
+            'Content-Type': 'application/json',
+            ...corsHeaders
+          } 
+        }
+      )
+    }
+
+    // Trouver l'utilisateur auth correspondant
+    const authUser = authUsers.users.find(u => u.email === email)
+    
+    if (!authUser) {
       return new Response(
         JSON.stringify({ error: 'Utilisateur d\'authentification non trouvé' }),
         { 
@@ -97,8 +111,6 @@ serve(async (req: Request) => {
         }
       )
     }
-
-    const authUser = authUsers.users[0]
 
     // D'abord vérifier l'ancien mot de passe en tentant une connexion
     const { error: verifyError } = await supabaseAdmin.auth.signInWithPassword({
@@ -140,10 +152,10 @@ serve(async (req: Request) => {
       )
     }
 
-    // Si c'est la première connexion, mettre à jour notre table personnalisée
+    // Si c'est la première connexion, mettre à jour la table profiles
     if (isFirstConnection) {
       const { error: updateUserError } = await supabaseAdmin
-        .from('users')
+        .from('profiles')  // Changé de 'users' à 'profiles'
         .update({ first_connection: false })
         .eq('email', email)
 

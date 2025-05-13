@@ -43,19 +43,67 @@ serve(async (req: Request) => {
     const requestData: SignInRequest = await req.json()
     const { email, password } = requestData
 
-    // Créer un client Supabase pour l'authentification
-    const supabase = createClient(supabaseUrl, supabaseAnonKey)
-    
-    // Créer un client admin pour accéder aux données utilisateur
+    console.log('Tentative de connexion pour:', email)
+
+    // Créer un client admin pour accéder aux données
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
 
-    // Essayer de se connecter avec Supabase Auth
+    // 1. ÉTAPE OBLIGATOIRE : Vérifier l'invitation pour cet email
+    console.log('Vérification de l\'invitation pour:', email)
+    const { data: invitation, error: inviteError } = await supabaseAdmin
+      .from('invites')
+      .select('*')
+      .eq('email', email)
+      .single()
+
+    // Si aucune invitation n'existe pour cet email
+    if (inviteError || !invitation) {
+      console.log('Aucune invitation trouvée pour:', email)
+      return new Response(
+        JSON.stringify({ 
+          error: 'Aucune invitation trouvée pour cet email. Vous devez être invité pour accéder à la plateforme.' 
+        }),
+        { 
+          status: 403, 
+          headers: { 
+            'Content-Type': 'application/json',
+            ...corsHeaders
+          } 
+        }
+      )
+    }
+
+    console.log('Invitation trouvée:', { 
+      invite_id: invitation.invite_id,
+      used: invitation.used,
+      expires_at: invitation.expires_at 
+    })
+
+    // Vérifier si l'invitation a expiré
+    if (invitation.expires_at && new Date(invitation.expires_at) < new Date()) {
+      return new Response(
+        JSON.stringify({ error: 'Votre invitation a expiré' }),
+        { 
+          status: 403, 
+          headers: { 
+            'Content-Type': 'application/json',
+            ...corsHeaders
+          } 
+        }
+      )
+    }
+
+    // 2. Essayer de se connecter directement
+    const supabase = createClient(supabaseUrl, supabaseAnonKey)
+    
+    console.log('Tentative de connexion avec Supabase Auth')
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
       email,
       password,
     })
 
     if (authError || !authData.user) {
+      console.log('Échec de l\'authentification:', authError)
       return new Response(
         JSON.stringify({ error: 'Email ou mot de passe incorrect' }),
         { 
@@ -69,54 +117,30 @@ serve(async (req: Request) => {
     }
 
     const authUserId = authData.user.id
-    console.log('Utilisateur authentifié:', { email, authUserId })
+    console.log('Authentification réussie:', { email, authUserId })
 
-    // Récupérer les informations utilisateur de notre table personnalisée en utilisant l'auth_id
+    // 3. Si la connexion réussit et que l'invitation n'était pas utilisée, la marquer comme utilisée
+    if (!invitation.used) {
+      console.log('Marquage de l\'invitation comme utilisée')
+      await supabaseAdmin
+        .from('invites')
+        .update({ used: true })
+        .eq('invite_id', invitation.invite_id)
+    }
+
+    // 4. Récupérer les informations utilisateur de la table profiles
     const { data: user, error: userError } = await supabaseAdmin
-      .from('users')
+      .from('profiles')
       .select('*')
-      .eq('auth_id', authUserId) // Utiliser auth_id au lieu d'email
+      .eq('user_id', authUserId)
       .single()
 
     if (userError || !user) {
-      console.error('Utilisateur non trouvé dans table users:', { authUserId, userError })
-      
-      // Fallback: essayer avec l'email si auth_id ne fonctionne pas
-      const { data: userByEmail, error: emailError } = await supabaseAdmin
-        .from('users')
-        .select('*')
-        .eq('email', email)
-        .single()
-      
-      if (emailError || !userByEmail) {
-        return new Response(
-          JSON.stringify({ error: 'Utilisateur non trouvé dans les données personnalisées' }),
-          { 
-            status: 404, 
-            headers: { 
-              'Content-Type': 'application/json',
-              ...corsHeaders
-            } 
-          }
-        )
-      }
-      
-      // Si trouvé par email mais pas d'auth_id, le mettre à jour
-      console.log('Mise à jour auth_id pour utilisateur:', user_id)
-      await supabaseAdmin
-        .from('users')
-        .update({ auth_id: authUserId })
-        .eq('user_id', userByEmail.user_id)
-      
-      user = userByEmail
-    }
-
-    // Vérifier si l'utilisateur est actif
-    if (!user.active) {
+      console.error('Utilisateur non trouvé dans table profiles:', { authUserId, userError })
       return new Response(
-        JSON.stringify({ error: 'Compte désactivé' }),
+        JSON.stringify({ error: 'Utilisateur non trouvé dans les données personnalisées' }),
         { 
-          status: 403, 
+          status: 404, 
           headers: { 
             'Content-Type': 'application/json',
             ...corsHeaders
@@ -125,22 +149,13 @@ serve(async (req: Request) => {
       )
     }
 
-    // Si c'est la première connexion, on le signale mais on ne marque pas le token comme utilisé
-    // C'est le front qui gèrera la mise à jour de first_connection après le changement de mot de passe
+    // 5. Si c'est la première connexion
     if (user.first_connection) {
+      console.log('Première connexion détectée')
       return new Response(
         JSON.stringify({
           success: true,
           firstConnection: true,
-          user: {
-            user_id: user.user_id,
-            auth_id: user.auth_id,
-            email: user.email,
-            first_name: user.first_name,
-            last_name: user.last_name,
-            company_id: user.company_id,
-            role: user.role
-          },
           session: authData.session
         }),
         { 
@@ -153,30 +168,19 @@ serve(async (req: Request) => {
       )
     }
 
-    // Mettre à jour la date de dernière connexion
+    // 6. Mettre à jour la date de dernière connexion
     await supabaseAdmin
-      .from('users')
+      .from('profiles')
       .update({ last_login_date: new Date().toISOString() })
       .eq('user_id', user.user_id)
 
-    // Retourner les informations avec la session Supabase
+    // 7. Retourner les informations avec la session
+    console.log('Connexion réussie pour utilisateur existant')
     return new Response(
       JSON.stringify({
         success: true,
         firstConnection: false,
         session: authData.session,
-        user: {
-          user_id: user.user_id,
-          auth_id: user.auth_id,
-          email: user.email,
-          first_name: user.first_name,
-          last_name: user.last_name,
-          company_id: user.company_id,
-          role: user.role,
-          photo: user.photo,
-          birth_date: user.birth_date,
-          total_activ_points: user.total_activ_points
-        }
       }),
       { 
         status: 200, 
@@ -188,6 +192,7 @@ serve(async (req: Request) => {
     )
 
   } catch (error) {
+    console.error('Erreur serveur:', error)
     return new Response(
       JSON.stringify({ error: 'Erreur serveur', details: error.message }),
       { 
