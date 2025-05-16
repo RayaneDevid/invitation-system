@@ -7,6 +7,7 @@ import Dashboard from './pages/Dashboard';
 import ChangePassword from './pages/ChangePassword';
 import CreateInvitation from './pages/CreateInvitation';
 import AdminInvitations from './pages/AdminInvitations';
+import AuthCallback from './pages/AuthCallback';
 import { authAPI } from './services/api';
 import './App.css';
 
@@ -83,6 +84,7 @@ function App() {
               } 
             />
             <Route path="/" element={<Navigate to="/dashboard" />} />
+            <Route path="/auth/callback" element={<AuthCallback />} />
           </Routes>
         </main>
       </div>

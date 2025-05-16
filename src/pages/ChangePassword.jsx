@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { authAPI } from '../services/api';
 
@@ -8,11 +8,50 @@ const ChangePassword = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isSSO, setIsSSO] = useState(false);
   const navigate = useNavigate();
   
   const user = JSON.parse(localStorage.getItem('user') || '{}');
 
-  const handleSubmit = async (e) => {
+  useEffect(() => {
+    // Vérifier si l'utilisateur est connecté via SSO (pas de mot de passe)
+    checkIfSSO();
+  }, []);
+
+  const checkIfSSO = async () => {
+    // Si l'utilisateur a un provider dans ses métadonnées, c'est du SSO
+    const session = await authAPI.getSession();
+    if (session?.user?.app_metadata?.provider) {
+      setIsSSO(true);
+    }
+  };
+
+  const handleSSOFirstConnection = async () => {
+    setLoading(true);
+    try {
+      // Pour SSO, on marque juste first_connection à false
+      const response = await authAPI.changePassword(
+        user.email,
+        null, // Pas de mot de passe actuel pour SSO
+        null, // Pas de nouveau mot de passe pour SSO
+        true  // C'est la première connexion
+      );
+      
+      if (response.success) {
+        // Mettre à jour l'utilisateur en local
+        const updatedUser = { ...user, firstConnection: false };
+        localStorage.setItem('user', JSON.stringify(updatedUser));
+        
+        navigate('/dashboard');
+      }
+    } catch (err) {
+      setError('Erreur lors de la finalisation de votre première connexion');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStandardSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
@@ -31,7 +70,7 @@ const ChangePassword = () => {
 
     try {
       const response = await authAPI.changePassword(
-        user.email, // On passe l'email au lieu de user_id
+        user.email,
         currentPassword,
         newPassword,
         user.firstConnection
@@ -51,9 +90,41 @@ const ChangePassword = () => {
     }
   };
 
+  // Interface pour utilisateurs SSO
+  if (isSSO) {
+    return (
+      <div className="change-password-container">
+        <div className="sso-first-connection">
+          <h2>Bienvenue !</h2>
+          <p>Vous êtes connecté via Google/Microsoft.</p>
+          <p>Cliquez sur "Continuer" pour accéder à votre tableau de bord.</p>
+          
+          {error && <div className="error">{error}</div>}
+          
+          <button 
+            onClick={handleSSOFirstConnection}
+            disabled={loading}
+            style={{
+              padding: '12px 24px',
+              backgroundColor: '#007bff',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '16px'
+            }}
+          >
+            {loading ? 'Finalisation...' : 'Continuer'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Interface pour utilisateurs avec mot de passe
   return (
     <div className="change-password-container">
-      <form onSubmit={handleSubmit} className="change-password-form">
+      <form onSubmit={handleStandardSubmit} className="change-password-form">
         <h2>Changement de mot de passe</h2>
         {user.firstConnection && (
           <p className="info">Pour votre première connexion, vous devez changer votre mot de passe</p>

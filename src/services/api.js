@@ -65,6 +65,16 @@ export const authAPI = {
   },
 };
 
+export const ssoAPI = {
+  initiate: async (provider, email) => {
+    const response = await api.post('/sso-sign-in', {
+      provider,
+      email
+    });
+    return response.data;
+  },
+};
+
 export const invitationAPI = {
   create: async (data) => {
     const response = await api.post('/create-invitation', data);
